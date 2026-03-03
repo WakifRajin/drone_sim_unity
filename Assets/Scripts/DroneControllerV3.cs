@@ -32,17 +32,19 @@ public class DroneControllerV3 : MonoBehaviour
 
     [Header("Stabilization")]
     [Tooltip("How quickly the drone returns to horizontal when no input")]
-    public float autoLevelStrength = 5f;
+    public float autoLevelStrength = 8f;
     [Tooltip("Damping for linear movement")]
     public float linearDamping = 1.5f;
     [Tooltip("Damping for rotation")]
     public float angularDamping = 3f;
 
     [Header("Physics-Based Flight")]
-    [Tooltip("Thrust force generated based on tilt for realistic movement")]
-    public float tiltThrustMultiplier = 12f;
-    [Tooltip("Base hover force to counteract gravity")]
-    public float hoverForce = 9.81f;
+    [Tooltip("Total rotor thrust force (simulates quadcopter motors) - set to ~9.81 to balance gravity")]
+    public float rotorThrust = 9.81f;
+    [Tooltip("Additional hover force when Space is held (relative to base thrust)")]
+    public float additionalThrustMultiplier = 1.5f;
+    [Tooltip("Compensate for tilt to maintain altitude")]
+    public bool altitudeCompensation = true;
 
     [Header("ROS Topic")]
     public string cmdVelTopic = "cmd_vel";
@@ -87,10 +89,9 @@ public class DroneControllerV3 : MonoBehaviour
 
     void FixedUpdate()
     {
-        ApplyHoverForce();
         ApplyRotationControl();
-        ApplyPhysicsBasedMovement();
-        ApplyDirectVerticalMovement();
+        ApplyRealisticRotorThrust();
+        ApplyDirectMovement();
         ApplyAutoLeveling();
         LimitTiltAngle();
     }
@@ -125,35 +126,67 @@ public class DroneControllerV3 : MonoBehaviour
         else if (Input.GetKey(KeyCode.LeftShift)) verticalInput = -1f;
     }
 
-    private void ApplyHoverForce()
-    {
-        // Apply upward force to counteract gravity
-        rb.AddForce(Vector3.up * hoverForce * rb.mass, ForceMode.Force);
-    }
-
     private void ApplyRotationControl()
     {
         // Pitch (around local X-axis) - controlled by up/down arrows
-        // Negative because forward pitch should rotate nose down
-        rb.AddTorque(transform.right * -pitchRollInput.x * pitchRollTorque, ForceMode.Acceleration);
+        // Positive pitch input should pitch forward (nose down)
+        rb.AddTorque(transform.right * pitchRollInput.x * pitchRollTorque, ForceMode.Acceleration);
         
         // Roll (around local Z-axis) - controlled by left/right arrows
+        // Negative torque for correct left/right banking
         rb.AddTorque(transform.forward * -pitchRollInput.y * pitchRollTorque, ForceMode.Acceleration);
         
         // Yaw (around local Y-axis) - controlled by Q/E
         rb.AddTorque(transform.up * yawInput * yawTorque, ForceMode.Acceleration);
     }
 
-    private void ApplyPhysicsBasedMovement()
+    private void ApplyRealisticRotorThrust()
     {
-        // Get the drone's forward and right vectors projected onto horizontal plane
-        Vector3 forward = transform.forward;
-        Vector3 right = transform.right;
+        // REALISTIC QUADCOPTER PHYSICS:
+        // Rotors always push in the direction of the drone's "up" vector
+        // When tilted, this creates both horizontal movement AND upward lift
         
-        // Calculate tilt-based thrust (realistic quadcopter physics)
-        Vector3 tiltForce = (forward.normalized * pitchRollInput.x + right.normalized * pitchRollInput.y) * tiltThrustMultiplier;
+        // Calculate base thrust (should roughly equal gravity to hover)
+        float currentThrust = rotorThrust;
         
-        // Apply additional WASD force for direct control
+        // Add additional thrust when vertical input is positive (Space key)
+        // Reduce thrust when vertical input is negative (LShift key)
+        if (verticalInput > 0.01f)
+        {
+            currentThrust *= (1f + verticalInput * additionalThrustMultiplier);
+        }
+        else if (verticalInput < -0.01f)
+        {
+            currentThrust *= (1f + verticalInput * 0.5f); // Reduce thrust for descent
+            currentThrust = Mathf.Max(currentThrust, 0f); // Prevent negative thrust
+        }
+        
+        // Altitude compensation: increase thrust when tilted to maintain altitude
+        if (altitudeCompensation)
+        {
+            // Get the angle between transform.up and world up
+            float tiltAngle = Vector3.Angle(transform.up, Vector3.up);
+            // Compensate for loss of vertical thrust component
+            // When tilted 45°, cos(45°) ≈ 0.707, so we need ~1.41x thrust
+            float compensationFactor = 1f / Mathf.Cos(tiltAngle * Mathf.Deg2Rad);
+            compensationFactor = Mathf.Clamp(compensationFactor, 1f, 2f); // Limit to 2x max
+            currentThrust *= compensationFactor;
+        }
+        
+        // Apply thrust in the direction the rotors are pointing (transform.up)
+        Vector3 thrustDirection = transform.up;
+        rb.AddForce(thrustDirection * currentThrust * rb.mass, ForceMode.Force);
+        
+        // When drone tilts:
+        // - Forward tilt (nose down) → thrust points forward+up → moves forward
+        // - Left tilt → thrust points left+up → moves left
+        // - Right tilt → thrust points right+up → moves right
+        // - Backward tilt (nose up) → thrust points backward+up → moves backward
+    }
+
+    private void ApplyDirectMovement()
+    {
+        // Apply additional WASD force for supplemental control
         Vector3 moveDirection = new Vector3(horizontalInput.x, 0, horizontalInput.y);
         Vector3 worldMoveDirection = transform.TransformDirection(moveDirection);
         worldMoveDirection.y = 0; // Keep horizontal only
@@ -162,21 +195,7 @@ public class DroneControllerV3 : MonoBehaviour
         Vector3 horizontalVelocity = new Vector3(rb.linearVelocity.x, 0, rb.linearVelocity.z);
         if (horizontalVelocity.magnitude < maxHorizontalSpeed)
         {
-            rb.AddForce(worldMoveDirection * horizontalForce + tiltForce, ForceMode.Acceleration);
-        }
-    }
-
-    private void ApplyDirectVerticalMovement()
-    {
-        // Direct vertical control with Space/LShift
-        if (Mathf.Abs(verticalInput) > 0.01f)
-        {
-            float currentVerticalSpeed = rb.linearVelocity.y;
-            
-            if (Mathf.Abs(currentVerticalSpeed) < maxVerticalSpeed)
-            {
-                rb.AddForce(Vector3.up * verticalInput * verticalForce, ForceMode.Acceleration);
-            }
+            rb.AddForce(worldMoveDirection * horizontalForce, ForceMode.Acceleration);
         }
     }
 
@@ -185,24 +204,25 @@ public class DroneControllerV3 : MonoBehaviour
         // Only apply auto-leveling when there's no pitch/roll input
         if (pitchRollInput.magnitude < 0.01f)
         {
-            // Get current rotation in euler angles
-            Vector3 currentEuler = transform.eulerAngles;
+            // Get current euler angles
+            Vector3 currentEuler = transform.rotation.eulerAngles;
             
-            // Normalize angles to -180 to 180 range
+            // Convert to -180 to 180 range for proper angle calculation
             float pitch = Mathf.DeltaAngle(0, currentEuler.x);
             float roll = Mathf.DeltaAngle(0, currentEuler.z);
             
-            // Calculate corrective torque (negative to oppose current tilt)
+            // Apply corrective torque to level out
+            // Negative values to oppose the current tilt
             Vector3 correctiveTorque = Vector3.zero;
             correctiveTorque += transform.right * -pitch * autoLevelStrength;
             correctiveTorque += transform.forward * -roll * autoLevelStrength;
             
             rb.AddTorque(correctiveTorque, ForceMode.Acceleration);
             
-            // Additionally dampen angular velocity on pitch and roll axes
+            // Dampen pitch and roll angular velocity
             Vector3 localAngularVel = transform.InverseTransformDirection(rb.angularVelocity);
-            localAngularVel.x *= 0.5f; // Dampen pitch rotation
-            localAngularVel.z *= 0.5f; // Dampen roll rotation
+            localAngularVel.x *= 0.3f; // Stronger damping for faster leveling
+            localAngularVel.z *= 0.3f;
             rb.angularVelocity = transform.TransformDirection(localAngularVel);
         }
     }
@@ -215,6 +235,7 @@ public class DroneControllerV3 : MonoBehaviour
         float roll = Mathf.DeltaAngle(0, currentEuler.z);
         
         bool needsCorrection = false;
+        Vector3 angVel = rb.angularVelocity;
         
         if (Mathf.Abs(pitch) > maxTiltAngle)
         {
@@ -233,8 +254,7 @@ public class DroneControllerV3 : MonoBehaviour
             float yaw = currentEuler.y;
             transform.rotation = Quaternion.Euler(pitch, yaw, roll);
             
-            // Also zero out the angular velocity to prevent further rotation
-            Vector3 angVel = rb.angularVelocity;
+            // Zero out angular velocity in pitch and roll to prevent overshoot
             Vector3 localAngVel = transform.InverseTransformDirection(angVel);
             localAngVel.x = 0;
             localAngVel.z = 0;
@@ -247,9 +267,11 @@ public class DroneControllerV3 : MonoBehaviour
         if (!useRosControl) return;
 
         // Map ROS Twist to drone controls
+        // Linear: x=forward/back, y=left/right, z=up/down
         horizontalInput = new Vector2(-(float)msg.linear.y, (float)msg.linear.x);
         verticalInput = (float)msg.linear.z;
         
+        // Angular: x=pitch, y=yaw, z=roll
         pitchRollInput = new Vector2((float)msg.angular.y, (float)msg.angular.x);
         yawInput = (float)msg.angular.z;
     }
@@ -267,12 +289,12 @@ public class DroneControllerV3 : MonoBehaviour
         Gizmos.color = Color.blue;
         Gizmos.DrawLine(transform.position, transform.position + transform.forward * 2f);
         
-        // Draw up direction (red)
+        // Draw up direction / rotor thrust direction (red)
         Gizmos.color = Color.red;
         Gizmos.DrawLine(transform.position, transform.position + transform.up * 2f);
         
-        // Draw right direction (yellow)
+        // Draw rotor thrust force (yellow)
         Gizmos.color = Color.yellow;
-        Gizmos.DrawLine(transform.position, transform.position + transform.right * 2f);
+        Gizmos.DrawRay(transform.position, transform.up * 3f);
     }
 }
