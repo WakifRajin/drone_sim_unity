@@ -135,10 +135,12 @@ public class DroneControllerV3 : MonoBehaviour
     private void ApplyRotationControl()
     {
         // Pitch (around local X-axis) - controlled by up/down arrows
-        rb.AddTorque(transform.right * pitchRollInput.x * pitchRollTorque, ForceMode.Acceleration);
+        // Negative torque because positive pitch should tilt forward (nose down in world space)
+        rb.AddTorque(transform.right * -pitchRollInput.x * pitchRollTorque, ForceMode.Acceleration);
         
         // Roll (around local Z-axis) - controlled by left/right arrows
-        rb.AddTorque(transform.forward * pitchRollInput.y * pitchRollTorque, ForceMode.Acceleration);
+        // Negative torque for correct left/right banking
+        rb.AddTorque(transform.forward * -pitchRollInput.y * pitchRollTorque, ForceMode.Acceleration);
         
         // Yaw (around local Y-axis) - controlled by Q/E
         rb.AddTorque(transform.up * yawInput * yawTorque, ForceMode.Acceleration);
@@ -146,19 +148,17 @@ public class DroneControllerV3 : MonoBehaviour
 
     private void ApplyPhysicsBasedMovement()
     {
-        // Get current tilt angles
-        Vector3 currentRotation = transform.rotation.eulerAngles;
-        float pitchAngle = Mathf.DeltaAngle(0, currentRotation.x);
-        float rollAngle = Mathf.DeltaAngle(0, currentRotation.z);
-
-        // Calculate thrust direction based on drone's tilt
-        // When tilted forward, thrust pushes forward; when tilted right, thrust pushes right
-        Vector3 tiltDirection = new Vector3(rollAngle, 0, -pitchAngle).normalized;
-        Vector3 worldTiltDirection = transform.TransformDirection(tiltDirection);
+        // Physics-based thrust from tilt
+        // When drone is tilted, thrust pushes in that direction
+        Vector3 forward = transform.forward;
+        forward.y = 0; // Project to horizontal plane
         
-        // Apply physics-based thrust from tilt
-        float tiltMagnitude = new Vector2(pitchAngle, rollAngle).magnitude / maxTiltAngle;
-        rb.AddForce(worldTiltDirection * tiltMagnitude * tiltThrustMultiplier, ForceMode.Acceleration);
+        Vector3 right = transform.right;
+        right.y = 0; // Project to horizontal plane
+        
+        // Combine pitch and roll inputs to get thrust direction
+        Vector3 tiltForce = (forward.normalized * pitchRollInput.x + right.normalized * pitchRollInput.y) * tiltThrustMultiplier;
+        rb.AddForce(tiltForce, ForceMode.Acceleration);
 
         // Apply additional WASD force for direct control
         Vector3 moveDirection = new Vector3(horizontalInput.x, 0, horizontalInput.y);
@@ -192,29 +192,25 @@ public class DroneControllerV3 : MonoBehaviour
         // Only apply auto-leveling when there's no pitch/roll input
         if (pitchRollInput.magnitude < 0.01f)
         {
-            // Calculate the rotation needed to align with world up
-            Quaternion targetRotation = Quaternion.FromToRotation(transform.up, Vector3.up) * transform.rotation;
-            Quaternion deltaRotation = Quaternion.Inverse(transform.rotation) * targetRotation;
+            // Get current euler angles
+            Vector3 currentEuler = transform.rotation.eulerAngles;
             
-            // Extract torque needed for leveling (only pitch and roll, preserve yaw)
-            Vector3 axis;
-            float angle;
-            deltaRotation.ToAngleAxis(out angle, out axis);
+            // Convert to -180 to 180 range for proper angle calculation
+            float pitch = Mathf.DeltaAngle(0, currentEuler.x);
+            float roll = Mathf.DeltaAngle(0, currentEuler.z);
             
-            if (angle > 180f) angle -= 360f;
+            // Apply corrective torque to level out
+            // Negative values to oppose the current tilt
+            Vector3 correctiveTorque = Vector3.zero;
+            correctiveTorque += transform.right * -pitch * autoLevelStrength;
+            correctiveTorque += transform.forward * -roll * autoLevelStrength;
             
-            Vector3 localAxis = transform.InverseTransformDirection(axis);
-            localAxis.y = 0; // Preserve yaw
-            
-            Vector3 worldAxis = transform.TransformDirection(localAxis);
-            Vector3 levelingTorque = worldAxis * angle * autoLevelStrength;
-            
-            rb.AddTorque(levelingTorque, ForceMode.Acceleration);
+            rb.AddTorque(correctiveTorque, ForceMode.Acceleration);
             
             // Dampen pitch and roll angular velocity
             Vector3 localAngularVel = transform.InverseTransformDirection(rb.angularVelocity);
-            localAngularVel.x *= 0.5f;
-            localAngularVel.z *= 0.5f;
+            localAngularVel.x *= 0.3f; // Stronger damping for faster leveling
+            localAngularVel.z *= 0.3f;
             rb.angularVelocity = transform.TransformDirection(localAngularVel);
         }
     }
@@ -227,6 +223,7 @@ public class DroneControllerV3 : MonoBehaviour
         float roll = Mathf.DeltaAngle(0, currentEuler.z);
         
         bool needsCorrection = false;
+        Vector3 angVel = rb.angularVelocity;
         
         if (Mathf.Abs(pitch) > maxTiltAngle)
         {
@@ -244,6 +241,12 @@ public class DroneControllerV3 : MonoBehaviour
         {
             float yaw = currentEuler.y;
             transform.rotation = Quaternion.Euler(pitch, yaw, roll);
+            
+            // Zero out angular velocity in pitch and roll to prevent overshoot
+            Vector3 localAngVel = transform.InverseTransformDirection(angVel);
+            localAngVel.x = 0;
+            localAngVel.z = 0;
+            rb.angularVelocity = transform.TransformDirection(localAngVel);
         }
     }
 
