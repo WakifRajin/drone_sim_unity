@@ -39,8 +39,8 @@ public class DroneControllerV3 : MonoBehaviour
     public float angularDamping = 3f;
 
     [Header("Physics-Based Flight")]
-    [Tooltip("Thrust force generated based on tilt for realistic movement")]
-    public float tiltThrustMultiplier = 15f;
+    [Tooltip("Total rotor thrust force (simulates quadcopter motors)")]
+    public float rotorThrust = 25f;
     [Tooltip("Base hover force to counteract gravity")]
     public float hoverForce = 9.81f;
 
@@ -89,8 +89,8 @@ public class DroneControllerV3 : MonoBehaviour
     {
         ApplyHoverForce();
         ApplyRotationControl();
-        ApplyPhysicsBasedMovement();
-        ApplyDirectVerticalMovement();
+        ApplyRealisticRotorThrust();
+        ApplyDirectMovement();
         ApplyAutoLeveling();
         LimitTiltAngle();
     }
@@ -146,21 +146,26 @@ public class DroneControllerV3 : MonoBehaviour
         rb.AddTorque(transform.up * yawInput * yawTorque, ForceMode.Acceleration);
     }
 
-    private void ApplyPhysicsBasedMovement()
+    private void ApplyRealisticRotorThrust()
     {
-        // Physics-based thrust from tilt
-        // When drone is tilted, thrust pushes in that direction
-        Vector3 forward = transform.forward;
-        forward.y = 0; // Project to horizontal plane
+        // REALISTIC QUADCOPTER PHYSICS:
+        // Rotors always push in the direction of the drone's "up" vector
+        // When tilted, this creates both horizontal movement AND upward lift
         
-        Vector3 right = transform.right;
-        right.y = 0; // Project to horizontal plane
+        // Apply thrust in the direction the rotors are pointing (transform.up)
+        Vector3 thrustDirection = transform.up;
+        rb.AddForce(thrustDirection * rotorThrust, ForceMode.Acceleration);
         
-        // Combine pitch and roll inputs to get thrust direction
-        Vector3 tiltForce = (forward.normalized * pitchRollInput.x + right.normalized * pitchRollInput.y) * tiltThrustMultiplier;
-        rb.AddForce(tiltForce, ForceMode.Acceleration);
+        // When drone tilts:
+        // - Forward tilt (nose down) → thrust points forward+up → moves forward
+        // - Left tilt → thrust points left+up → moves left
+        // - Right tilt → thrust points right+up → moves right
+        // - Backward tilt (nose up) → thrust points backward+up → moves backward
+    }
 
-        // Apply additional WASD force for direct control
+    private void ApplyDirectMovement()
+    {
+        // Apply additional WASD force for supplemental control
         Vector3 moveDirection = new Vector3(horizontalInput.x, 0, horizontalInput.y);
         Vector3 worldMoveDirection = transform.TransformDirection(moveDirection);
         worldMoveDirection.y = 0; // Keep horizontal only
@@ -171,10 +176,7 @@ public class DroneControllerV3 : MonoBehaviour
         {
             rb.AddForce(worldMoveDirection * horizontalForce, ForceMode.Acceleration);
         }
-    }
 
-    private void ApplyDirectVerticalMovement()
-    {
         // Direct vertical control with Space/LShift
         if (Mathf.Abs(verticalInput) > 0.01f)
         {
@@ -269,16 +271,20 @@ public class DroneControllerV3 : MonoBehaviour
     {
         if (rb == null) return;
         
-        // Draw velocity vector
+        // Draw velocity vector (green)
         Gizmos.color = Color.green;
         Gizmos.DrawLine(transform.position, transform.position + rb.linearVelocity);
         
-        // Draw forward direction
+        // Draw forward direction (blue)
         Gizmos.color = Color.blue;
         Gizmos.DrawLine(transform.position, transform.position + transform.forward * 2f);
         
-        // Draw up direction
+        // Draw up direction / rotor thrust direction (red)
         Gizmos.color = Color.red;
         Gizmos.DrawLine(transform.position, transform.position + transform.up * 2f);
+        
+        // Draw rotor thrust force (yellow)
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawRay(transform.position, transform.up * 3f);
     }
 }
