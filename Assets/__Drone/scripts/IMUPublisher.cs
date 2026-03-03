@@ -16,7 +16,7 @@ public class IMUPublisher : MonoBehaviour
     public string imuTopic = "drone/imu";
 
     [Header("Publish Rate")]
-    public float publishRate = 100f; // Hz
+    public float publishRate = 50f; // Hz
 
     [Header("Coordinate Conversion")]
     [Tooltip("Enable if you need to convert from Unity (Y-up, Z-forward) to ROS ENU (Z-up, X-east, Y-north)")]
@@ -24,6 +24,11 @@ public class IMUPublisher : MonoBehaviour
 
     private float publishInterval;
     private float timer = 0f;
+
+    private ImuMsg imuMessage;
+    private double[] orientationCovariance;
+    private double[] angularVelocityCovariance;
+    private double[] linearAccelerationCovariance;
 
     void Start()
     {
@@ -34,6 +39,21 @@ public class IMUPublisher : MonoBehaviour
 
         previousVelocity = rb.linearVelocity;
         previousTime = Time.fixedTime;
+
+        orientationCovariance = new double[9];
+        angularVelocityCovariance = new double[9];
+        linearAccelerationCovariance = new double[9];
+
+        imuMessage = new ImuMsg
+        {
+            header = new HeaderMsg { frame_id = "drone_imu", stamp = new TimeMsg() },
+            orientation = new QuaternionMsg(),
+            angular_velocity = new Vector3Msg(),
+            linear_acceleration = new Vector3Msg(),
+            orientation_covariance = orientationCovariance,
+            angular_velocity_covariance = angularVelocityCovariance,
+            linear_acceleration_covariance = linearAccelerationCovariance
+        };
     }
 
     void FixedUpdate()
@@ -77,45 +97,24 @@ public class IMUPublisher : MonoBehaviour
         // Update previous velocity for next frame
         previousVelocity = rb.linearVelocity;
 
-        // ---- Build IMU message ----
-        ImuMsg msg = new ImuMsg
-        {
-            header = new HeaderMsg
-            {
-                frame_id = "drone_imu",
-                stamp = new TimeMsg
-                {
-                    sec = (int)Time.fixedTime,
-                    nanosec = (uint)((Time.fixedTime - (int)Time.fixedTime) * 1e9)
-                }
-            },
-            orientation = new QuaternionMsg
-            {
-                x = orientation.x,
-                y = orientation.y,
-                z = orientation.z,
-                w = orientation.w
-            },
-            angular_velocity = new Vector3Msg
-            {
-                x = angularVelocityBody.x,
-                y = angularVelocityBody.y,
-                z = angularVelocityBody.z
-            },
-            linear_acceleration = new Vector3Msg
-            {
-                x = motionAccelBody.x,
-                y = motionAccelBody.y,
-                z = motionAccelBody.z
-            }
-        };
+        // ---- Update reused IMU message fields ----
+        imuMessage.header.stamp.sec = (int)Time.fixedTime;
+        imuMessage.header.stamp.nanosec = (uint)((Time.fixedTime - (int)Time.fixedTime) * 1e9);
 
-        // Covariance arrays (optional – set to zero if unknown)
-        msg.orientation_covariance = new double[9];
-        msg.angular_velocity_covariance = new double[9];
-        msg.linear_acceleration_covariance = new double[9];
+        imuMessage.orientation.x = orientation.x;
+        imuMessage.orientation.y = orientation.y;
+        imuMessage.orientation.z = orientation.z;
+        imuMessage.orientation.w = orientation.w;
 
-        ros.Publish(imuTopic, msg);
+        imuMessage.angular_velocity.x = angularVelocityBody.x;
+        imuMessage.angular_velocity.y = angularVelocityBody.y;
+        imuMessage.angular_velocity.z = angularVelocityBody.z;
+
+        imuMessage.linear_acceleration.x = motionAccelBody.x;
+        imuMessage.linear_acceleration.y = motionAccelBody.y;
+        imuMessage.linear_acceleration.z = motionAccelBody.z;
+
+        ros.Publish(imuTopic, imuMessage);
     }
 
     // Convert a Unity quaternion (Y-up, Z-forward, left-handed) to ROS ENU (Z-up, X-east, Y-north, right-handed)

@@ -16,10 +16,14 @@ public class CameraPublisher : MonoBehaviour
     [Header("Publish Settings")]
     public int width = 640;
     public int height = 480;
-    public int fps = 30;
+    public int fps = 15;
 
     private float timer = 0f;
     private float publishInterval;
+
+    private RenderTexture renderTexture;
+    private Texture2D texture;
+    private byte[] imageDataBuffer;
 
     void Start()
     {
@@ -27,6 +31,10 @@ public class CameraPublisher : MonoBehaviour
         droneCamera = GetComponent<Camera>();
         publishInterval = 1f / fps;
         ros.RegisterPublisher<ImageMsg>(imageTopic);
+
+        renderTexture = new RenderTexture(width, height, 24);
+        texture = new Texture2D(width, height, TextureFormat.RGB24, false);
+        imageDataBuffer = new byte[width * height * 3];
     }
 
     void Update()
@@ -41,23 +49,19 @@ public class CameraPublisher : MonoBehaviour
 
     void PublishCameraImage()
     {
-        // Create a render texture and render the camera view into it
-        RenderTexture rt = new RenderTexture(width, height, 24);
-        droneCamera.targetTexture = rt;
-        Texture2D screenShot = new Texture2D(width, height, TextureFormat.RGB24, false);
+        // Render the camera view into the reusable render texture
+        droneCamera.targetTexture = renderTexture;
         droneCamera.Render();
-        RenderTexture.active = rt;
-        screenShot.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-        screenShot.Apply();
+        RenderTexture.active = renderTexture;
+        texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+        texture.Apply();
 
-        // Convert to byte array (ROS expects RGB8)
-        byte[] imageData = screenShot.GetRawTextureData();
+        // Copy to pre-allocated buffer using NativeArray overload (avoids intermediate byte[] allocation)
+        texture.GetRawTextureData<byte>().CopyTo(imageDataBuffer);
 
         // Cleanup
         droneCamera.targetTexture = null;
         RenderTexture.active = null;
-        Destroy(rt);
-        Destroy(screenShot);
 
         // Build Image message
         ImageMsg msg = new ImageMsg
@@ -75,9 +79,15 @@ public class CameraPublisher : MonoBehaviour
             width = (uint)width,
             encoding = "rgb8",
             step = (uint)(width * 3), // 3 bytes per pixel (RGB)
-            data = imageData
+            data = imageDataBuffer
         };
 
         ros.Publish(imageTopic, msg);
+    }
+
+    void OnDestroy()
+    {
+        if (renderTexture != null) Destroy(renderTexture);
+        if (texture != null) Destroy(texture);
     }
 }
