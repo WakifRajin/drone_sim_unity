@@ -7,7 +7,7 @@ using RosMessageTypes.Geometry;
 /// and realistic flight dynamics.
 /// </summary>
 [RequireComponent(typeof(Rigidbody))]
-public class DroneControllerV3 : MonoBehaviour
+public class DroneControllerV3old : MonoBehaviour
 {
     private Rigidbody rb;
     private ROSConnection ros;
