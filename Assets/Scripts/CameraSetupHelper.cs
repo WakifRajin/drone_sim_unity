@@ -1,9 +1,5 @@
 using UnityEngine;
 
-/// <summary>
-/// Helper component to mark cameras with descriptive names for the camera switcher.
-/// Attach this to each camera GameObject.
-/// </summary>
 public class CameraSetupHelper : MonoBehaviour
 {
     [Header("Camera Info")]

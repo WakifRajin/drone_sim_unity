@@ -4,8 +4,7 @@ using UnityEngine.Rendering.Universal;
 
 /// <summary>
 /// Night vision camera effect for URP - Camera-specific.
-/// Only applies to the camera this component is attached to.
-/// Automatically enables/disables with camera.
+///Debbugging version with detailed logs.
 /// </summary>
 [RequireComponent(typeof(Camera))]
 public class NightVisionEffect : MonoBehaviour
@@ -14,7 +13,7 @@ public class NightVisionEffect : MonoBehaviour
     [Tooltip("Enable night vision on this camera")]
     public bool nightVisionEnabled = true;
     [Tooltip("Toggle key (optional - set to None to disable toggle)")]
-    public KeyCode toggleKey = KeyCode.None;
+    public KeyCode toggleKey = KeyCode.N;
     
     [Header("Effect Parameters")]
     public Color nightVisionTint = new Color(0f, 1f, 0.3f, 1f);
@@ -23,30 +22,54 @@ public class NightVisionEffect : MonoBehaviour
     [Range(0f, 2f)]
     public float contrast = 1.2f;
     [Range(0f, 1f)]
-    public float vignetteIntensity = 0.4f;
+    public float vignetteIntensity = 0.8f;
     [Range(0f, 0.5f)]
-    public float scanLineIntensity = 0.1f;
-    [Range(0f, 0.1f)]
-    public float noiseAmount = 0.05f;
+    public float scanLineIntensity = 0.2f;
+    [Range(0f, 0.3f)]
+    public float noiseAmount = 0.1f;
+    [Range(0f, 1f)]
+    public float greenOverlayAlpha = 0.3f;
     
     [Header("URP Volume (Auto-created)")]
     public Volume postProcessVolume;
     
+    [Header("Debug Info")]
+    public bool showDebugInfo = true;
+    
     private Camera cam;
+    private UniversalAdditionalCameraData cameraData;
     private ColorAdjustments colorAdjustments;
     private Vignette vignette;
-    private Texture2D vignetteTexture;
+    private Bloom bloom;
     private Texture2D noiseTexture;
     private bool wasCameraEnabled;
+    private GUIStyle debugStyle;
 
     void Start()
     {
         cam = GetComponent<Camera>();
+        cameraData = cam.GetUniversalAdditionalCameraData();
         wasCameraEnabled = cam.enabled;
         
+        // CRITICAL: Enable post processing on this camera
+        if (cameraData != null)
+        {
+            cameraData.renderPostProcessing = true;
+            Debug.Log($"[NightVision] Post Processing enabled on {gameObject.name}");
+        }
+        else
+        {
+            Debug.LogError($"[NightVision] UniversalAdditionalCameraData not found on {gameObject.name}!");
+        }
+        
         SetupPostProcessing();
-        CreateVignetteTexture();
         CreateNoiseTexture();
+        
+        // Setup debug style
+        debugStyle = new GUIStyle();
+        debugStyle.fontSize = 14;
+        debugStyle.normal.textColor = Color.yellow;
+        debugStyle.padding = new RectOffset(10, 10, 10, 10);
         
         // Apply initial state
         UpdateNightVision();
@@ -67,6 +90,7 @@ public class NightVisionEffect : MonoBehaviour
         {
             wasCameraEnabled = cam.enabled;
             UpdateNightVision();
+            Debug.Log($"[{gameObject.name}] Camera enabled: {cam.enabled}");
         }
     }
 
@@ -94,11 +118,16 @@ public class NightVisionEffect : MonoBehaviour
             volumeObj.transform.localPosition = Vector3.zero;
             
             postProcessVolume = volumeObj.AddComponent<Volume>();
-            postProcessVolume.isGlobal = false; // Local to this camera
-            postProcessVolume.priority = 10; // Higher priority
+            postProcessVolume.isGlobal = true; // Changed to global for testing
+            postProcessVolume.priority = 100; // Very high priority
+            postProcessVolume.weight = 0f;
             
             // Create new profile
-            postProcessVolume.profile = ScriptableObject.CreateInstance<VolumeProfile>();
+            VolumeProfile profile = ScriptableObject.CreateInstance<VolumeProfile>();
+            profile.name = $"{gameObject.name}_NightVisionProfile";
+            postProcessVolume.profile = profile;
+            
+            Debug.Log($"[NightVision] Created volume for {gameObject.name}");
         }
 
         // Get or add effects
@@ -106,41 +135,26 @@ public class NightVisionEffect : MonoBehaviour
         {
             if (!postProcessVolume.profile.TryGet(out colorAdjustments))
             {
-                colorAdjustments = postProcessVolume.profile.Add<ColorAdjustments>();
+                colorAdjustments = postProcessVolume.profile.Add<ColorAdjustments>(true);
+                Debug.Log("[NightVision] Added ColorAdjustments");
             }
             
             if (!postProcessVolume.profile.TryGet(out vignette))
             {
-                vignette = postProcessVolume.profile.Add<Vignette>();
+                vignette = postProcessVolume.profile.Add<Vignette>(true);
+                Debug.Log("[NightVision] Added Vignette");
             }
-        }
-        
-        // Configure the volume layer (optional - for more control)
-        // This ensures only this camera sees the effect
-        postProcessVolume.weight = 0f;
-    }
-
-    void CreateVignetteTexture()
-    {
-        int size = 512;
-        vignetteTexture = new Texture2D(size, size, TextureFormat.RGBA32, false);
-        
-        Vector2 center = new Vector2(size / 2f, size / 2f);
-        float maxDist = size / 2f;
-        
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
+            
+            if (!postProcessVolume.profile.TryGet(out bloom))
             {
-                float dist = Vector2.Distance(new Vector2(x, y), center);
-                float vignette = 1f - Mathf.Clamp01(dist / maxDist);
-                vignette = Mathf.Pow(vignette, 1.5f);
-                
-                vignetteTexture.SetPixel(x, y, new Color(1f, 1f, 1f, vignette));
+                bloom = postProcessVolume.profile.Add<Bloom>(true);
+                Debug.Log("[NightVision] Added Bloom");
             }
         }
-        
-        vignetteTexture.Apply();
+        else
+        {
+            Debug.LogError("[NightVision] Volume profile is null!");
+        }
     }
 
     void CreateNoiseTexture()
@@ -163,32 +177,81 @@ public class NightVisionEffect : MonoBehaviour
 
     void UpdateNightVision()
     {
-        if (postProcessVolume == null) return;
+        if (postProcessVolume == null)
+        {
+            Debug.LogError("[NightVision] Post process volume is null!");
+            return;
+        }
 
         // Only apply if camera is enabled AND night vision is enabled
         bool shouldBeActive = cam.enabled && nightVisionEnabled && enabled;
+
+        Debug.Log($"[NightVision] UpdateNightVision - Camera: {cam.enabled}, NV: {nightVisionEnabled}, Component: {enabled}, Should be active: {shouldBeActive}");
 
         if (shouldBeActive)
         {
             // Enable volume
             postProcessVolume.weight = 1f;
+            postProcessVolume.enabled = true;
             
             // Configure color adjustments
             if (colorAdjustments != null)
             {
                 colorAdjustments.active = true;
+                
+                // Post exposure (brightness)
+                colorAdjustments.postExposure.overrideState = true;
                 colorAdjustments.postExposure.value = brightness;
+                
+                // Contrast
+                colorAdjustments.contrast.overrideState = true;
                 colorAdjustments.contrast.value = (contrast - 1f) * 100f;
-                colorAdjustments.saturation.value = -100f; // Full desaturation
+                
+                // Saturation (desaturate)
+                colorAdjustments.saturation.overrideState = true;
+                colorAdjustments.saturation.value = -100f;
+                
+                // Color filter (green tint)
+                colorAdjustments.colorFilter.overrideState = true;
+                colorAdjustments.colorFilter.value = nightVisionTint;
+                
+                Debug.Log($"[NightVision] ColorAdjustments applied - Exposure: {brightness}, Saturation: -100");
+            }
+            else
+            {
+                Debug.LogError("[NightVision] ColorAdjustments is null!");
             }
             
             // Configure vignette
             if (vignette != null)
             {
                 vignette.active = true;
+                
+                vignette.intensity.overrideState = true;
                 vignette.intensity.value = vignetteIntensity;
+                
+                vignette.smoothness.overrideState = true;
                 vignette.smoothness.value = 0.4f;
+                
+                vignette.color.overrideState = true;
                 vignette.color.value = Color.black;
+                
+                Debug.Log($"[NightVision] Vignette applied - Intensity: {vignetteIntensity}");
+            }
+            
+            // Configure bloom (for glow effect)
+            if (bloom != null)
+            {
+                bloom.active = true;
+                
+                bloom.intensity.overrideState = true;
+                bloom.intensity.value = 0.5f;
+                
+                bloom.threshold.overrideState = true;
+                bloom.threshold.value = 0.5f;
+                
+                bloom.tint.overrideState = true;
+                bloom.tint.value = nightVisionTint;
             }
         }
         else
@@ -198,6 +261,9 @@ public class NightVisionEffect : MonoBehaviour
             
             if (colorAdjustments != null) colorAdjustments.active = false;
             if (vignette != null) vignette.active = false;
+            if (bloom != null) bloom.active = false;
+            
+            Debug.Log("[NightVision] Effects disabled");
         }
     }
 
@@ -206,15 +272,12 @@ public class NightVisionEffect : MonoBehaviour
         // Only render GUI if THIS camera is active
         if (!cam.enabled || !nightVisionEnabled) return;
         
-        // Check if this is the active camera (basic check)
-        if (Camera.current != cam) return;
-        
-        // Draw green tint overlay
-        GUI.color = new Color(nightVisionTint.r, nightVisionTint.g, nightVisionTint.b, 0.15f);
+        // Draw green overlay - ALWAYS visible for testing
+        GUI.color = new Color(nightVisionTint.r, nightVisionTint.g, nightVisionTint.b, greenOverlayAlpha);
         GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.whiteTexture);
         
         // Draw noise
-        if (noiseAmount > 0)
+        if (noiseAmount > 0 && noiseTexture != null)
         {
             GUI.color = new Color(1, 1, 1, noiseAmount);
             float noiseOffset = Time.time * 2f;
@@ -244,7 +307,7 @@ public class NightVisionEffect : MonoBehaviour
         
         // Draw border
         GUI.color = nightVisionTint;
-        int borderSize = 3;
+        int borderSize = 5;
         GUI.DrawTexture(new Rect(0, 0, Screen.width, borderSize), Texture2D.whiteTexture);
         GUI.DrawTexture(new Rect(0, Screen.height - borderSize, Screen.width, borderSize), Texture2D.whiteTexture);
         GUI.DrawTexture(new Rect(0, 0, borderSize, Screen.height), Texture2D.whiteTexture);
@@ -252,13 +315,25 @@ public class NightVisionEffect : MonoBehaviour
         
         // Draw HUD
         GUIStyle style = new GUIStyle();
-        style.fontSize = 18;
+        style.fontSize = 24;
         style.fontStyle = FontStyle.Bold;
         style.normal.textColor = nightVisionTint;
         style.alignment = TextAnchor.UpperLeft;
-        style.padding = new RectOffset(15, 10, 15, 10);
+        style.padding = new RectOffset(20, 10, 20, 10);
         
-        GUI.Label(new Rect(0, 0, 300, 40), "◉ NIGHT VISION", style);
+        GUI.Label(new Rect(0, 0, 400, 50), "◉ NIGHT VISION ACTIVE", style);
+        
+        // Debug info
+        if (showDebugInfo)
+        {
+            string debugText = $"Camera: {gameObject.name}\n" +
+                             $"Camera Enabled: {cam.enabled}\n" +
+                             $"NV Enabled: {nightVisionEnabled}\n" +
+                             $"Volume Weight: {(postProcessVolume != null ? postProcessVolume.weight : 0)}\n" +
+                             $"Post Processing: {(cameraData != null ? cameraData.renderPostProcessing : false)}";
+            
+            GUI.Label(new Rect(10, 60, 400, 150), debugText, debugStyle);
+        }
         
         GUI.color = Color.white;
     }
@@ -283,11 +358,6 @@ public class NightVisionEffect : MonoBehaviour
 
     void OnDestroy()
     {
-        if (vignetteTexture != null)
-        {
-            Destroy(vignetteTexture);
-        }
-        
         if (noiseTexture != null)
         {
             Destroy(noiseTexture);
